@@ -5,7 +5,7 @@ from .dream_net import DreamShuffleAgent
 from .policy_net import get_action_layer
 
 class ChessActorNet (Model):
-    def __init__(self, flags, game):
+    def __init__(self, game, **kwargs):
         super().__init__()
         self.l = Dense(64, activation = 'relu')
         self.act, self.actions_discrete = get_action_layer(game)
@@ -19,7 +19,7 @@ class ChessActorNet (Model):
         return y
 
 class ChessCriticNet (Model):
-    def __init__(self, flags):
+    def __init__(self, **kwargs):
         super().__init__()
         self.l1 = Dense(50, activation=tf.nn.relu)
         self.l2 = Dense(1)
@@ -30,7 +30,7 @@ class ChessCriticNet (Model):
         return y
 
 class ChessCoreNet (Model):
-    def __init__(self, flags):
+    def __init__(self, **kwargs):
         super().__init__()
         self.l1 = Dense(50, activation=tf.nn.relu)
         self.l2 = Dense(width)
@@ -41,7 +41,7 @@ class ChessCoreNet (Model):
         return y
 
 class ChessOrderNet (Model):
-    def __init__(self, num_offsets_to_predict, flags):
+    def __init__(self, num_offsets_to_predict, **kwargs):
         super().__init__()
         self.l1 = Dense(50, activation=tf.nn.relu)
         self.l2 = Dense(num_offsets_to_predict)
@@ -52,7 +52,7 @@ class ChessOrderNet (Model):
         return y
 
 class ChessGenNet (Model):
-    def __init__(self, width, flags):
+    def __init__(self, width, **kwargs):
         super().__init__()
         self.l1 = Dense(50, activation=tf.nn.relu)
         self.l2 = Dense(width)

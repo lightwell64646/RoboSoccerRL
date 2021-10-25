@@ -4,7 +4,7 @@ from tensorflow.keras.layers import Dense
 from .policy_net import Agent, dualNet, get_action_layer
 
 class PendulumAgentNet (Model):
-    def __init__(self, flags, game):
+    def __init__(self, game, **kwargs):
         super().__init__()
         self.l = Dense(64, activation = 'relu')
         self.act, self.actions_discrete = get_action_layer(game)
@@ -18,7 +18,7 @@ class PendulumAgentNet (Model):
         return y
 
 class PendulumCriticNet (Model):
-    def __init__(self, flags):
+    def __init__(self, **kwargs):
         super().__init__()
         self.l1 = Dense(50, name="critic_l1", activation=tf.nn.relu)
         self.l2 = Dense(1, name="critic_l2")
@@ -28,11 +28,11 @@ class PendulumCriticNet (Model):
         y = self.l2(y)
         return y
 
-def get_pendulum_net(flags, game):
+def get_pendulum_net(game, discount_rate, **kwargs):
     return Agent(
-        PendulumAgentNet(flags, game), 
-        dualNet(PendulumCriticNet, flags), 
-        flags.discount_rate)
+        PendulumAgentNet(game, **kwargs), 
+        dualNet(PendulumCriticNet, **kwargs), 
+        discount_rate)
 
 
 

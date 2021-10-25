@@ -6,8 +6,8 @@ from replay.gather_game_records import gather_traces
 from tf_agents.environments.batched_py_environment import BatchedPyEnvironment
 
 
-def trainAgent(env, agent, flags, epochs = 1000, render = False):
-    memory = Memory(flags.capacity)
+def trainAgent(env, agent, capacity, steps, sticky_epsilon, parallel_environments, batch_size, train_cycles, epochs = 1000, render = False):
+    memory = Memory(capacity)
     def store_new_batches(step):
         confusion = 9999 # agent.get_loss(*step)
         for i in range(step[0].shape[0]):
@@ -19,24 +19,25 @@ def trainAgent(env, agent, flags, epochs = 1000, render = False):
             gather_traces(
                         env, 
                         explore_policy, 
-                        flags.steps, 
+                        steps, 
                         observers = [store_new_batches], 
-                        batches = flags.explore_cycles)
+                        batches = explore_cycles)
 
 
-    explore_policy = GreedyExplorePolicy(agent, flags.sticky_epsilon)
-    batches_till_full = int(flags.capacity / flags.parallel_environments)
-    gather_traces(env, explore_policy, flags.steps, observers = [store_new_batches], batches = batches_till_full)
+    explore_policy = GreedyExplorePolicy(agent, sticky_epsilon)
+    batches_till_full = int(capacity / parallel_environments)
+    gather_traces(env, explore_policy, steps, observers = [store_new_batches], batches = batches_till_full)
     
-    for args in get_memory_dataset(memory, flags.batch_size):
+    replay_dataset = get_replay_dataset(memory, batch_size)
+    for args in replay_dataset:
         for arg, name in zip(args, ["batch_idx", "obs", "act", "rew", "discount", "ISWeights"]):
             print(f"{name}: {arg}")
         agent.train_step(*args)
     agent.compile("adam")
     agent.fit(
-            get_memory_dataset(memory, flags.batch_size), 
+            replay_dataset, 
             epochs = epochs, 
-            steps_per_epoch = flags.train_cycles, 
+            steps_per_epoch = train_cycles, 
             callbacks = [
                 prioritized_update_callback(memory, agent),
                 gather_traces_callback()])

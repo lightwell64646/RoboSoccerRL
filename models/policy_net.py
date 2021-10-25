@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras import Model
-from wikitext_Quac_npestes.commons.utils import learn_net
+from .wikitext_Quac_npestes.commons.train_utils import learn_net
 
 class dualNet(Model):
     def __init__(self, critic, duplicates=2, *args, **kwargs):
@@ -37,12 +37,13 @@ class Agent(Model):
         critique = self.critic(obs, hindsight_actions) # (b,t,1)
         self.actor_preped_loss = -tf.reduce_mean(critique, axis=0)
 
-    def train_step(self, obs, act, rew, discount, idx, sample_weight):
+    def train_step(self, trace, idx, sample_weight, **kwargs):
+        obs, act, rew, discount = trace
         with tf.GradientTape() as agent_tape:
             hindsight_actions = self.action(obs, discount) # (b,t,actions)
             critique = self.critic(obs, hindsight_actions) # (b,t,1)
             actor_loss = -tf.reduce_mean(critique)
-        learn_net(self.action, actor_loss, agent_tape)
+        learn_net(self.action, actor_loss, agent_tape, **kwargs)
 
         with tf.GradientTape() as critic_tape:
             continuous_act = self.action.reverseDiscretes(act) # (b,t,actions)
@@ -53,7 +54,7 @@ class Agent(Model):
             expected_reward = rew[:,:-1] + discount[:,:-1] * self.discount_rate * critique[:,1:] # (b,t)
             expected_reward = tf.stop_gradient(expected_reward)
             critic_loss = tf.keras.losses.MSE(expected_reward, estimates[:,:-1])
-        learn_net(self.critic, critic_loss, critic_tape)
+        learn_net(self.critic, critic_loss, critic_tape, **kwargs)
 
         return critic_loss
 

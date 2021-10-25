@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import Model
-from wikitext_Quac_npestes.commons.utils import learn_net, learn_nets
-from wikitext_Quac_npestes.reorder_utils.shuffle_utils import shuffleNet
+from .wikitext_Quac_npestes.commons.train_utils import learn_net, learn_nets
+from .wikitext_Quac_npestes.reorder_utils.shuffle_utils import shuffleNet
 from .policy_net import Agent, GreedyExplorePolicy
 
 class DreamNet(Model):
@@ -38,27 +38,27 @@ class DreamShuffleAgent(Model):
     def call_act_train(self, x):
         return self.agent.call_train_actor(
                     tf.stop_gradient(
-                        self.core(self.prep(x))
+                        self.core(self.prep(x), causal=True)
                     ))
     def call_act(self, x):
         return self.agent(
                     tf.stop_gradient(
-                        self.core(self.prep(x))
+                        self.core(self.prep(x), causal=True)
                     ))
     def call_critic(self, x):
         return self.critic(
                     tf.stop_gradient(
-                        self.core(self.prep(x))
+                        self.core(self.prep(x), causal=True)
                     ))
-    def train_step(self, x, *args):
+    def train_step(self, x, *args, **kwargs):
         self.agent.train_step(x, *args)
         with tf.GradientTape(persistent=True) as tape:
-            self.language(x, training=True)
+            self.language(x, training=True, causal=False)
             language_loss = self.prep.losses + self.core.losses + self.order.losses
             agent_loss = self.agent.actor_preped_loss * self.language.batch_generator_loss / self.cycles
-        learn_nets([self.core, self.prep, self.order], language_loss, tape)
-        learn_net(self.gen, self.gen.losses, tape)
-        learn_net(self.act, agent_loss, tape)
+        learn_nets([self.core, self.prep, self.order], language_loss, tape, **kwargs)
+        learn_net(self.gen, self.gen.losses, tape, **kwargs)
+        learn_net(self.act, agent_loss, tape, **kwargs)
         return {m.name: m.result() for m in self.metrics}
 
     def test_step(self, x):

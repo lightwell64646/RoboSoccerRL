@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 
 from tensorflow.keras.callbacks import Callback
+from tensorflow.keras import Model
 
 np.random.seed(1)
 tf.random.set_seed(1)
@@ -22,6 +23,7 @@ class SumTree(object):
     Story the data with it priority in tree and data frameworks.
     """
     data_pointer = 0
+    full = False
 
     def __init__(self, capacity):
         self.capacity = capacity  # for all priority values
@@ -40,6 +42,7 @@ class SumTree(object):
         self.data_pointer += 1
         if self.data_pointer >= self.capacity:  # replace when exceed the capacity
             self.data_pointer = 0
+            self.full = True
 
     def update(self, tree_idx, p):
         change = p - self.tree[tree_idx]
@@ -99,15 +102,22 @@ class Memory(object):  # stored as ( s, a, r, s_ ) in SumTree
     beta_increment_per_sampling = 1e-4  # annealing the bias
     abs_err_upper = 1   # for stability refer to paper
 
+    data_groups = 1
+    data_groups_initialized = False
+
     def __init__(self, capacity):
         self.tree = SumTree(capacity)
 
     def store(self, error, transition):
         p = self._get_priority(error)
         self.tree.add_new_priority(p, transition)
+        if self.data_groups_initialized == False:
+            self.data_groups = len(transition)
+            self.data_groups_initialized = True
 
     def sample(self, n):
-        batch_idx, obs, act, rew, discount, ISWeights = [], [], [], [], [], []
+        batch_idx, ISWeights = [], []
+        data_packed = [[] for _ in range(self.data_groups)]
         segment = self.tree.root_priority / n
         self.beta = np.min([1, self.beta + self.beta_increment_per_sampling])  # max = 1
 
@@ -121,19 +131,14 @@ class Memory(object):  # stored as ( s, a, r, s_ ) in SumTree
             prob = p / self.tree.root_priority
             ISWeights.append(self.tree.capacity * prob)
             batch_idx.append(idx)
-            obs.append(data[0])
-            act.append(data[1])
-            rew.append(data[2])
-            discount.append(data[3])
+            for j in range(self.data_groups):
+                data_packed[j].append(data[j])
 
-        obs = tf.stack(obs)
-        act = tf.stack(act)
-        rew = tf.stack(rew)
-        discount = tf.stack(discount)
+        data_packed = [tf.stack(d, axis=0) for d in data_packed]
 
         ISWeights = np.vstack(ISWeights)
         ISWeights = np.power(ISWeights, -self.beta) / maxiwi  # normalize
-        return obs, act, rew, discount, np.array(batch_idx), ISWeights
+        return data_packed, np.array(batch_idx), ISWeights
 
     def update(self, idx, error):
         p = self._get_priority(error)
@@ -144,28 +149,92 @@ class Memory(object):  # stored as ( s, a, r, s_ ) in SumTree
         clipped_error = np.clip(error, 0, self.abs_err_upper)
         return np.power(clipped_error, self.alpha)
 
-def get_memory_dataset(memory, batch):
-    obs, act, rew, discount, batch_idx, ISWeights = memory.sample(batch)
+def get_replay_dataset(memory, batch):
+    data, batch_idx, ISWeights = memory.sample(batch)
+    obs, act, rew, discount = data
     def gen():
         while 1:
             yield memory.sample(batch)
     return tf.data.Dataset.from_generator(
         gen,
         output_signature=(
-            tf.TensorSpec(shape=obs.shape, dtype=obs.dtype),
+            (tf.TensorSpec(shape=obs.shape, dtype=obs.dtype),
             tf.TensorSpec(shape=act.shape, dtype=act.dtype),
             tf.TensorSpec(shape=rew.shape, dtype=rew.dtype),
-            tf.TensorSpec(shape=discount.shape, dtype=discount.dtype),
+            tf.TensorSpec(shape=discount.shape, dtype=discount.dtype)),
             tf.TensorSpec(shape=batch_idx.shape, dtype=batch_idx.dtype),
             tf.TensorSpec(shape=ISWeights.shape, dtype=ISWeights.dtype),
         )
     )
 
+def compile_with_memory(dataset, memory, model, loss, update=False, samples=None, *args, **kwargs):
+    batch_size = None
+    for data in dataset:
+        if type(data) is tuple:
+            samples = samples or data[0].shape[0]
+            batch_size = data[0].shape[0]
+        else:
+            samples = samples or data.shape[0]
+            batch_size = data.shape[0]
+        break
+    for data in dataset:
+        for i in range(batch_size):
+            memory.store(1, [d[i] for d in data])
+        if memory.tree.full:
+            break
+
+    callback = prioritized_update_callback(memory) if update else prioritized_replace_callback(memory, lambda x: x > 0.5)
+    def append_memory(*args):
+        data_packed, batch_idx, ISWeights = memory.sample(samples)
+        if update:
+            callback.last_sample_idxs = batch_idx
+        res = []
+        for i, m in enumerate(data_packed):
+            res.append(tf.concat([args[i], m], axis=0))
+        return res
+    dataset = dataset.map(append_memory).map(get_post_batch(callback))
+    model.compile(loss=wraped_loss(loss, get_loss_reporter(callback)), *args, **kwargs)
+    return dataset, callback
+
+
 class prioritized_update_callback(Callback):
-    def __init__(self, net, mem):
-        self.net = net
+    def __init__(self, mem):
         self.mem = mem
+        self.last_sample_idxs = None
+        self.last_loss = None
     def on_train_batch_end(self, batch, logs=None):
-        idxs = self.net.sample_idxs
+        idxs = self.last_sample_idxs
         for j in range(len(idxs)):
-            mem.update(idxs[j], self.net.last_critic_loss[j])
+            self.mem.update(idxs[j], self.last_loss[j])
+
+class prioritized_replace_callback(Callback):
+    def __init__(self, mem, filter):
+        self.mem = mem
+        self.filter = filter
+        self.last_batch = None
+        self.last_loss = None
+    def on_train_batch_end(self, batch, logs=None):
+        print(logs)
+        print(self.last_loss)
+        self.last_loss = np.array(self.last_loss)
+        for i, sample in enumerate(self.last_batch):
+            if self.filter(self.last_loss[i]):
+                self.mem.store(self.last_loss[i], sample)
+
+def get_loss_reporter(callback):
+    def report(loss):
+        callback.last_loss = loss
+    return report
+
+def wraped_loss(real_loss, util):
+    def wl(true, pred):
+        loss = real_loss(true, pred)
+        util(loss)
+        return loss
+    return wl
+
+def get_post_batch(report):
+    def post(*args):
+        report.last_batch = args
+        return args
+    return post
